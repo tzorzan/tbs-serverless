@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  tbs-serverless
+
+  Toilet Booking System, serverless edition
+
+Parameters:
+
+  ToiletID: 
+    Description: Unique Identifier of the toilet
+    Type: String
+    AllowedPattern: "^[a-zA-Z0-9\\-]*$"
+    MinLength: '1'
+    MaxLength: '16'
+    ConstraintDescription: Must contain only alphanumberic characters and hyphen-minus.
+    Default: my-toilet
+
+Resources:
+
+  IotEndpointProvider:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      CodeUri: iot_endpoint_provider/
+      Handler: index.handler
+      Runtime: nodejs6.10
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: 
+              - iot:DescribeEndpoint
+            Resource:
+              - '*'
+
+  IotEndpoint:
+    Type: 'Custom::IotEndpoint'
+    Properties:
+      ServiceToken: !GetAtt IotEndpointProvider.Arn
+
+  ThingLogicFunction:
+      Type: AWS::Serverless::Function
+      Properties:
+          CodeUri: thing_logic/
+          Handler: index.handler
+          Runtime: nodejs8.10
+          Environment:
+              Variables:
+                THING_NAME: !Ref ToiletID
+                IOT_ENDPOINT_ADDRESS: !GetAtt IotEndpoint.IotEndpointAddress
+
+  ThingLogicTopicRule:
+    Type: "AWS::IoT::TopicRule"
+    Properties:
+      TopicRulePayload:
+        AwsIotSqlVersion: "2016-03-23"
+        Description: "Call lambda when thing shadow receive an update."
+        RuleDisabled: "false"
+        Sql:
+          Fn::Join: [ "", ["SELECT * FROM '$aws/things/tbs_", { "Ref": "ToiletID" }, "/shadow/update/documents'"] ]
+        Actions:
+          - Lambda: 
+              FunctionArn: !GetAtt ThingLogicFunction.Arn
+
+  ThingLogicInvocationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      SourceArn: !Join [ "", [ "arn:aws:iot:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":rule/", !Ref "ThingLogicTopicRule" ] ]
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      FunctionName: !GetAtt ThingLogicFunction.Arn
+      SourceAccount: !Ref AWS::AccountId
+
+Outputs:
+
+  ThingLogicFunction:
+    Description: "TBS thing logic Lambda Function ARN"
+    Value: !GetAtt ThingLogicFunction.Arn
